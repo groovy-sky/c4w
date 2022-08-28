@@ -55,7 +55,6 @@ func (v *Validator) AddMozillaCerts() {
 	defer resp.Body.Close()
 
 	r := csv.NewReader(resp.Body)
-
 	// https://stackoverflow.com/questions/31326659/golang-csv-error-bare-in-non-quoted-field
 	r.LazyQuotes = true
 
@@ -84,7 +83,21 @@ func (v *Validator) CheckWeb(url string) {
 		log.Printf("Couldn't access %s:\n%s", url, err)
 	} else {
 		defer resp.Body.Close()
-		fmt.Println(resp.Body)
+		/*
+			body, err := ioutil.ReadAll(resp.Body)
+
+			if err != nil {
+				fmt.Printf("Error %s", err)
+				return
+			}
+
+			//fmt.Printf("Body : %s", body)
+		*/
+		fmt.Printf("resp.Status: %v\n", resp.TLS.VerifiedChains)
+
+		for _, cert := range resp.TLS.VerifiedChains[0] {
+			fmt.Printf("Domains:\n\t%s\nVersion:\n\t%d\nFrom:\n\t%s\nTo:\n\t%s\nSubject:\n\t%s\n", cert.DNSNames, cert.Version, cert.NotBefore, cert.NotAfter, cert.Subject)
+		}
 	}
 
 }
@@ -99,6 +112,7 @@ func main() {
 	wcv := Validator{roots, client}
 
 	wcv.AddCert([]byte(ccadbRootCA))
+	wcv.AddMozillaCerts()
 
 	wcv.CheckWeb("https://www.ccadb.org/resources")
 
