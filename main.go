@@ -35,20 +35,19 @@ CAUw7C29C79Fv1C5qfPrmAESrciIxpg0X40KPMbp1ZWVbd4=
 -----END CERTIFICATE-----
 `
 
-func main() {
-	// Creates empty CA pool and append it with Root CA
-	roots := x509.NewCertPool()
-	ok := roots.AppendCertsFromPEM([]byte(ccadbRootCA))
+type Validator struct {
+	Roots  *x509.CertPool
+	Client *http.Client
+}
 
-	if !ok {
-		log.Fatal("Couldn't store CA certificates")
-	}
-	tr := &http.Transport{
-		TLSClientConfig: &tls.Config{InsecureSkipVerify: false, RootCAs: roots},
-	}
-	client := &http.Client{Transport: tr}
+func (v *Validator) AddCert(cert []byte) {
+	// Appends CA store
+	v.Roots.AppendCertsFromPEM(cert)
+}
 
-	resp, err := client.Get("https://ccadb-public.secure.force.com/mozilla/IncludedRootsDistrustTLSSSLPEMCSV?TrustBitsInclude=Websites")
+func (v *Validator) AddMozillaCerts() {
+	// Download and add Mozilla's Root CAs
+	resp, err := v.Client.Get("https://ccadb-public.secure.force.com/mozilla/IncludedRootsDistrustTLSSSLPEMCSV?TrustBitsInclude=Websites")
 
 	if err != nil {
 		log.Fatal("Couldn't download CSV file")
@@ -57,18 +56,50 @@ func main() {
 
 	r := csv.NewReader(resp.Body)
 
+	// https://stackoverflow.com/questions/31326659/golang-csv-error-bare-in-non-quoted-field
+	r.LazyQuotes = true
+
 	for {
-		// Read each record from csv
+		// Read each record from CSV and appends CA store till end of the file
 		record, err := r.Read()
 		if err == io.EOF {
 			break
 		}
 		if err != nil {
 			fmt.Println(err)
+		} else {
+			newCert := record[0][1 : len(record[0])-1]
+			v.AddCert([]byte(newCert))
+
 		}
-		fmt.Printf("CSV: %s\n", record[0])
+
+	}
+}
+
+func (v *Validator) CheckWeb(url string) {
+	// Validates URL's certificate state
+	resp, err := v.Client.Get(url)
+
+	if err != nil {
+		log.Printf("Couldn't access %s:\n%s", url, err)
+	} else {
+		defer resp.Body.Close()
+		fmt.Println(resp.Body)
 	}
 
-	//fmt.Print(records)
+}
+
+func main() {
+	roots := x509.NewCertPool()
+
+	tr := &http.Transport{
+		TLSClientConfig: &tls.Config{InsecureSkipVerify: false, RootCAs: roots},
+	}
+	client := &http.Client{Transport: tr}
+	wcv := Validator{roots, client}
+
+	wcv.AddCert([]byte(ccadbRootCA))
+
+	wcv.CheckWeb("https://www.ccadb.org/resources")
 
 }
