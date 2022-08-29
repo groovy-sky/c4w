@@ -75,31 +75,33 @@ func (v *Validator) AddMozillaCerts() {
 	}
 }
 
-func (v *Validator) CheckWeb(url string) {
+func (v *Validator) CheckWeb(url string) ([][]*x509.Certificate, error) {
 	// Validates URL's certificate state
+	var certChain [][]*x509.Certificate
+	var certErr error
 	resp, err := v.Client.Get(url)
-
+	certErr = err
 	if err != nil {
-		log.Printf("Couldn't access %s:\n%s", url, err)
+		if url[0:8] == "https://" {
+			url = url[8:]
+		}
+		if url[len(url)-1:] == "/" {
+			url = url[:len(url)-1]
+		}
+		url = url + ":443"
+		fmt.Println(url)
+		conn, tlserr := tls.Dial("tcp", url, nil)
+		if tlserr != nil {
+			certErr = fmt.Errorf("%w; %w", certErr, tlserr)
+		} else {
+			defer conn.Close()
+			certChain = conn.ConnectionState().VerifiedChains
+		}
 	} else {
 		defer resp.Body.Close()
-		/*
-			body, err := ioutil.ReadAll(resp.Body)
-
-			if err != nil {
-				fmt.Printf("Error %s", err)
-				return
-			}
-
-			//fmt.Printf("Body : %s", body)
-		*/
-		fmt.Printf("resp.Status: %v\n", resp.TLS.VerifiedChains)
-
-		for _, cert := range resp.TLS.VerifiedChains[0] {
-			fmt.Printf("Domains:\n\t%s\nVersion:\n\t%d\nFrom:\n\t%s\nTo:\n\t%s\nSubject:\n\t%s\n", cert.DNSNames, cert.Version, cert.NotBefore, cert.NotAfter, cert.Subject)
-		}
+		certChain = resp.TLS.VerifiedChains
 	}
-
+	return certChain, certErr
 }
 
 func main() {
@@ -114,6 +116,8 @@ func main() {
 	wcv.AddCert([]byte(ccadbRootCA))
 	wcv.AddMozillaCerts()
 
-	wcv.CheckWeb("https://www.ccadb.org/resources")
+	resp, err := wcv.CheckWeb("https://expired.badssl.com/")
+	fmt.Println(resp)
+	fmt.Println(err)
 
 }
