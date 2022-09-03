@@ -4,6 +4,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/csv"
+	"flag"
 	"fmt"
 	"io"
 	"log"
@@ -75,33 +76,44 @@ func (v *Validator) AddMozillaCerts() {
 	}
 }
 
-func (v *Validator) CheckWeb(url string) ([][]*x509.Certificate, error) {
+func (v *Validator) CheckWeb(url string) ([]*x509.Certificate, error) {
 	// Validates URL's certificate state
-	var certChain [][]*x509.Certificate
+	var certChain []*x509.Certificate
 	var certErr error
-	resp, err := v.Client.Get(url)
-	certErr = err
-	if err != nil {
-		if url[0:8] == "https://" {
-			url = url[8:]
+	req, err := http.NewRequest(http.MethodGet, url, nil)
+	if err == nil {
+		resp, err := v.Client.Do(req)
+		if err == nil {
+			defer resp.Body.Close()
 		}
-		if url[len(url)-1:] == "/" {
-			url = url[:len(url)-1]
-		}
-		url = url + ":443"
-		fmt.Println(url)
-		conn, tlserr := tls.Dial("tcp", url, nil)
-		if tlserr != nil {
-			certErr = fmt.Errorf("%w; %w", certErr, tlserr)
-		} else {
-			defer conn.Close()
-			certChain = conn.ConnectionState().VerifiedChains
-		}
-	} else {
-		defer resp.Body.Close()
-		certChain = resp.TLS.VerifiedChains
+		certChain = resp.TLS.PeerCertificates
+		certErr = err
 	}
 	return certChain, certErr
+	//resp, err := v.Client.Get(url)
+	/*
+		certErr = err
+		if err != nil {
+			if url[0:8] == "https://" {
+				url = url[8:]
+			}
+			if url[len(url)-1:] == "/" {
+				url = url[:len(url)-1]
+			}
+			url = url + ":443"
+			fmt.Println(url)
+			conn, tlserr := tls.Dial("tcp", url, nil)
+			if tlserr != nil {
+				certErr = fmt.Errorf("%w; %w", certErr, tlserr)
+			} else {
+				defer conn.Close()
+				//certChain = conn.ConnectionState().VerifiedChains
+			}
+		} else {
+			defer resp.Body.Close()
+		}
+		return resp.TLS.VerifiedChains, certErr
+	*/
 }
 
 func main() {
@@ -116,8 +128,23 @@ func main() {
 	wcv.AddCert([]byte(ccadbRootCA))
 	wcv.AddMozillaCerts()
 
-	resp, err := wcv.CheckWeb("https://expired.badssl.com/")
-	fmt.Println(resp)
+	insecure := flag.Bool("insecure-ssl", true, "Accept/Ignore all server SSL certificates")
+	flag.Parse()
+	tr.TLSClientConfig.InsecureSkipVerify = *insecure
+
+	certs, err := wcv.CheckWeb("https://wrong.host.badssl.com/")
+	opts := x509.VerifyOptions{
+		Roots: roots,
+	}
+
+	for _, cert := range certs {
+		fmt.Printf("DNS Names:\n\t%s\nValidity :\n\t%s - %s\nKey Algorithm:\n\t%s\nValid:\n\t%t\nURIs:\n\t%s\n\n", cert.DNSNames, cert.NotBefore, cert.NotAfter, cert.PublicKeyAlgorithm.String(), cert.BasicConstraintsValid, cert.URIs)
+
+		if _, err := cert.Verify(opts); err != nil {
+			fmt.Println(err)
+		}
+	}
+	//fmt.Println(certs)
 	fmt.Println(err)
 
 }
