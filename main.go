@@ -9,6 +9,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"time"
 )
 
 const ccadbRootCA = `
@@ -39,6 +40,21 @@ CAUw7C29C79Fv1C5qfPrmAESrciIxpg0X40KPMbp1ZWVbd4=
 type Validator struct {
 	Roots  *x509.CertPool
 	Client *http.Client
+}
+
+func (v *Validator) CheckCert(c *x509.Certificate) {
+	fmt.Printf("%s | ", c.Subject.CommonName)
+
+	tn := time.Now().Unix()
+	switch {
+	case c.NotBefore.Unix() > tn:
+		fmt.Println("Inactive Certificate")
+		fallthrough
+	case c.NotAfter.Unix() < tn:
+		fmt.Println("Expired Certificate")
+	default:
+		fmt.Println("No problem found")
+	}
 }
 
 func (v *Validator) AddCert(cert []byte) {
@@ -123,28 +139,32 @@ func main() {
 		TLSClientConfig: &tls.Config{InsecureSkipVerify: false, RootCAs: roots},
 	}
 	client := &http.Client{Transport: tr}
-	wcv := Validator{roots, client}
+	w4c := Validator{roots, client}
 
-	wcv.AddCert([]byte(ccadbRootCA))
-	wcv.AddMozillaCerts()
+	w4c.AddCert([]byte(ccadbRootCA))
+	w4c.AddMozillaCerts()
 
 	insecure := flag.Bool("insecure-ssl", true, "Accept/Ignore all server SSL certificates")
 	flag.Parse()
 	tr.TLSClientConfig.InsecureSkipVerify = *insecure
 
-	certs, err := wcv.CheckWeb("https://wrong.host.badssl.com/")
+	certs, err := w4c.CheckWeb("https://untrusted-root.badssl.com/")
 	opts := x509.VerifyOptions{
-		Roots: roots,
+		Roots:   w4c.Roots,
+		DNSName: "untrusted-root.badssl.com",
 	}
-
+	if _, err := certs[0].Verify(opts); err != nil {
+		fmt.Println(err)
+	}
 	for _, cert := range certs {
-		fmt.Printf("DNS Names:\n\t%s\nValidity :\n\t%s - %s\nKey Algorithm:\n\t%s\nValid:\n\t%t\nURIs:\n\t%s\n\n", cert.DNSNames, cert.NotBefore, cert.NotAfter, cert.PublicKeyAlgorithm.String(), cert.BasicConstraintsValid, cert.URIs)
-
-		if _, err := cert.Verify(opts); err != nil {
-			fmt.Println(err)
-		}
+		//fmt.Printf("DNS Names:\n\t%s\nValidity :\n\t%s - %s\nKey Algorithm:\n\t%s\nValid:\n\t%t\nURIs:\n\t%s\n\nOther:\n\t%s\n\n", cert.DNSNames, cert.NotBefore, cert.NotAfter, cert.PublicKeyAlgorithm.String(), cert.BasicConstraintsValid, cert.URIs, cert.CRLDistributionPoints)
+		/*
+			if _, err := cert.Verify(opts); err != nil {
+				fmt.Println(err.Error())
+			}
+		*/
+		w4c.CheckCert(cert)
 	}
-	//fmt.Println(certs)
 	fmt.Println(err)
 
 }
