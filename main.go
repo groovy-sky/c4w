@@ -4,7 +4,6 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/csv"
-	"flag"
 	"fmt"
 	"io"
 	"log"
@@ -37,14 +36,27 @@ CAUw7C29C79Fv1C5qfPrmAESrciIxpg0X40KPMbp1ZWVbd4=
 -----END CERTIFICATE-----
 `
 
-type Validator struct {
+type WebValidator struct {
 	Roots  *x509.CertPool
 	Client *http.Client
 }
 
-func (v *Validator) CheckCert(c *x509.Certificate) {
-	fmt.Printf("%s | ", c.Subject.CommonName)
+func (v *WebValidator) Init(insecure bool) {
+	// Initiate empty CA cert pool for validator
+	roots := x509.NewCertPool()
 
+	tr := &http.Transport{
+		TLSClientConfig: &tls.Config{InsecureSkipVerify: insecure, RootCAs: roots},
+	}
+	client := &http.Client{Transport: tr}
+
+	v.Client = client
+	v.Roots = roots
+
+}
+
+func (v *WebValidator) CheckCert(c *x509.Certificate) {
+	// Checks certificate validity
 	tn := time.Now().Unix()
 	switch {
 	case c.NotBefore.Unix() > tn:
@@ -57,12 +69,12 @@ func (v *Validator) CheckCert(c *x509.Certificate) {
 	}
 }
 
-func (v *Validator) AddCert(cert []byte) {
+func (v *WebValidator) AddCert(cert []byte) {
 	// Appends CA store
 	v.Roots.AppendCertsFromPEM(cert)
 }
 
-func (v *Validator) AddMozillaCerts() {
+func (v *WebValidator) AddMozillaCA() {
 	// Download and add Mozilla's Root CAs
 	resp, err := v.Client.Get("https://ccadb-public.secure.force.com/mozilla/IncludedRootsDistrustTLSSSLPEMCSV?TrustBitsInclude=Websites")
 
@@ -92,79 +104,41 @@ func (v *Validator) AddMozillaCerts() {
 	}
 }
 
-func (v *Validator) CheckWeb(url string) ([]*x509.Certificate, error) {
+func (v *WebValidator) CheckWeb(url string) ([]*x509.Certificate, error) {
 	// Validates URL's certificate state
 	var certChain []*x509.Certificate
 	var certErr error
 	req, err := http.NewRequest(http.MethodGet, url, nil)
 	if err == nil {
 		resp, err := v.Client.Do(req)
-		if err == nil {
-			defer resp.Body.Close()
-		}
-		certChain = resp.TLS.PeerCertificates
 		certErr = err
+		switch err {
+		case nil:
+			defer resp.Body.Close()
+			certChain = resp.TLS.PeerCertificates
+		default:
+			var val WebValidator
+			val.Init(true)
+			certChain, _ = val.CheckWeb(url)
+		}
 	}
 	return certChain, certErr
-	//resp, err := v.Client.Get(url)
-	/*
-		certErr = err
-		if err != nil {
-			if url[0:8] == "https://" {
-				url = url[8:]
-			}
-			if url[len(url)-1:] == "/" {
-				url = url[:len(url)-1]
-			}
-			url = url + ":443"
-			fmt.Println(url)
-			conn, tlserr := tls.Dial("tcp", url, nil)
-			if tlserr != nil {
-				certErr = fmt.Errorf("%w; %w", certErr, tlserr)
-			} else {
-				defer conn.Close()
-				//certChain = conn.ConnectionState().VerifiedChains
-			}
-		} else {
-			defer resp.Body.Close()
-		}
-		return resp.TLS.VerifiedChains, certErr
-	*/
 }
 
 func main() {
-	roots := x509.NewCertPool()
+	var w4c WebValidator
 
-	tr := &http.Transport{
-		TLSClientConfig: &tls.Config{InsecureSkipVerify: false, RootCAs: roots},
-	}
-	client := &http.Client{Transport: tr}
-	w4c := Validator{roots, client}
-
+	w4c.Init(false)
 	w4c.AddCert([]byte(ccadbRootCA))
-	w4c.AddMozillaCerts()
-
-	insecure := flag.Bool("insecure-ssl", true, "Accept/Ignore all server SSL certificates")
-	flag.Parse()
-	tr.TLSClientConfig.InsecureSkipVerify = *insecure
+	w4c.AddMozillaCA()
 
 	certs, err := w4c.CheckWeb("https://untrusted-root.badssl.com/")
-	opts := x509.VerifyOptions{
-		Roots:   w4c.Roots,
-		DNSName: "untrusted-root.badssl.com",
-	}
-	if _, err := certs[0].Verify(opts); err != nil {
-		fmt.Println(err)
-	}
+
+	fmt.Println(err)
+
 	for _, cert := range certs {
-		//fmt.Printf("DNS Names:\n\t%s\nValidity :\n\t%s - %s\nKey Algorithm:\n\t%s\nValid:\n\t%t\nURIs:\n\t%s\n\nOther:\n\t%s\n\n", cert.DNSNames, cert.NotBefore, cert.NotAfter, cert.PublicKeyAlgorithm.String(), cert.BasicConstraintsValid, cert.URIs, cert.CRLDistributionPoints)
-		/*
-			if _, err := cert.Verify(opts); err != nil {
-				fmt.Println(err.Error())
-			}
-		*/
+		fmt.Printf("DNS Names: %s\nValidity : %s - %s\nKey Algorithm: %s\nValid: %t\nURIs: %s\n", cert.DNSNames, cert.NotBefore, cert.NotAfter, cert.PublicKeyAlgorithm.String(), cert.BasicConstraintsValid, cert.URIs)
 		w4c.CheckCert(cert)
 	}
-	fmt.Println(err)
 
 }
