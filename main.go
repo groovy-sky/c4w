@@ -1,14 +1,20 @@
 package main
 
 import (
+	"bytes"
+	"crypto"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/csv"
 	"fmt"
 	"io"
+	"io/ioutil"
 	"log"
 	"net/http"
+	"net/url"
 	"time"
+
+	"golang.org/x/crypto/ocsp"
 )
 
 const ccadbRootCA = `
@@ -125,6 +131,43 @@ func (v *WebValidator) CheckWeb(url string) ([]*x509.Certificate, error) {
 	return certChain, certErr
 }
 
+func CheckOCSP(commonName string, cert, issuerCert *x509.Certificate) (*ocsp.Response, error) {
+	var response *ocsp.Response
+	opts := &ocsp.RequestOptions{Hash: crypto.SHA256}
+	buffer, err := ocsp.CreateRequest(cert, issuerCert, opts)
+	if err != nil {
+		return response, err
+	}
+	if len(cert.OCSPServer) > 0 {
+		return response, err
+	}
+	ocspServerURL := cert.OCSPServer[0]
+	httpRequest, err := http.NewRequest(http.MethodPost, ocspServerURL, bytes.NewBuffer(buffer))
+	if err != nil {
+		return response, err
+	}
+	ocspURL, err := url.Parse(ocspServerURL)
+	if err != nil {
+		return response, err
+	}
+	httpRequest.Header.Add("Content-Type", "application/ocsp-request")
+	httpRequest.Header.Add("Accept", "application/ocsp-response")
+	httpRequest.Header.Add("host", ocspURL.Host)
+	httpClient := &http.Client{}
+	httpResponse, err := httpClient.Do(httpRequest)
+	if err != nil {
+		return response, err
+	}
+	defer httpResponse.Body.Close()
+	output, err := ioutil.ReadAll(httpResponse.Body)
+	if err != nil {
+		return response, err
+	}
+	response, err = ocsp.ParseResponseForCert(output, cert, issuerCert)
+
+	return response, err
+}
+
 func main() {
 	var w4c WebValidator
 
@@ -132,13 +175,19 @@ func main() {
 	w4c.AddCert([]byte(ccadbRootCA))
 	w4c.AddMozillaCA()
 
-	certs, err := w4c.CheckWeb("https://untrusted-root.badssl.com/")
+	link := "https://delfi.lv"
+
+	certs, err := w4c.CheckWeb(link)
 
 	fmt.Println(err)
 
-	for _, cert := range certs {
-		fmt.Printf("DNS Names: %s\nValidity : %s - %s\nKey Algorithm: %s\nValid: %t\nURIs: %s\n", cert.DNSNames, cert.NotBefore, cert.NotAfter, cert.PublicKeyAlgorithm.String(), cert.BasicConstraintsValid, cert.URIs)
-		w4c.CheckCert(cert)
+	// for _, cert := range certs {
+	// 	fmt.Printf("DNS Names: %s\nValidity : %s - %s\nKey Algorithm: %s\nValid: %t\nURIs: %s\nOCSP: %s\nCLR: %s\n", cert.DNSNames, cert.NotBefore, cert.NotAfter, cert.PublicKeyAlgorithm.String(), cert.BasicConstraintsValid, cert.URIs, cert.OCSPServer, cert.CRLDistributionPoints)
+
+	// 	w4c.CheckCert(cert)
+	// }
+	if res, err := CheckOCSP(link, certs[0], certs[1]); err == nil {
+		fmt.Println(res.Status)
 	}
 
 }
