@@ -1,20 +1,22 @@
 package main
 
 import (
-	"bytes"
-	"crypto"
-	"crypto/tls"
-	"crypto/x509"
-	"encoding/csv"
-	"fmt"
-	"io"
-	"io/ioutil"
-	"log"
-	"net/http"
-	"net/url"
-	"time"
+    "bytes"
+    "crypto"
+    "crypto/tls"
+    "crypto/x509"
+    "encoding/csv"
+    "fmt"
+    "io"
+    "io/ioutil"
+    "log"
+    "net/http"
+    "net/url"
+    "os"
+    "time"
 
-	"golang.org/x/crypto/ocsp"
+    "github.com/urfave/cli/v2"
+    "golang.org/x/crypto/ocsp"
 )
 
 const ccadbRootCA = `
@@ -43,151 +45,187 @@ CAUw7C29C79Fv1C5qfPrmAESrciIxpg0X40KPMbp1ZWVbd4=
 `
 
 type WebValidator struct {
-	Roots  *x509.CertPool
-	Client *http.Client
+    Roots  *x509.CertPool
+    Client *http.Client
 }
 
 func (v *WebValidator) Init(insecure bool) {
-	// Initiate empty CA cert pool for validator
-	roots := x509.NewCertPool()
+    // Initiate empty CA cert pool for validator
+    roots := x509.NewCertPool()
 
-	tr := &http.Transport{
-		TLSClientConfig: &tls.Config{InsecureSkipVerify: insecure, RootCAs: roots},
-	}
-	client := &http.Client{Transport: tr}
+    tr := &http.Transport{
+        TLSClientConfig: &tls.Config{InsecureSkipVerify: insecure, RootCAs: roots},
+    }
+    client := &http.Client{Transport: tr}
 
-	v.Client = client
-	v.Roots = roots
+    v.Client = client
+    v.Roots = roots
 
 }
 
 func (v *WebValidator) CheckCert(c *x509.Certificate) {
-	// Checks certificate validity
-	tn := time.Now().Unix()
-	switch {
-	case c.NotBefore.Unix() > tn:
-		fmt.Println("Inactive Certificate")
-		fallthrough
-	case c.NotAfter.Unix() < tn:
-		fmt.Println("Expired Certificate")
-	default:
-		fmt.Println("No problem found")
-	}
+    // Checks certificate validity
+    tn := time.Now().Unix()
+    switch {
+    case c.NotBefore.Unix() > tn:
+        fmt.Println("Inactive Certificate")
+        fallthrough
+    case c.NotAfter.Unix() < tn:
+        fmt.Println("Expired Certificate")
+    default:
+        fmt.Println("No problem found")
+    }
 }
 
 func (v *WebValidator) AddCert(cert []byte) {
-	// Appends CA store
-	v.Roots.AppendCertsFromPEM(cert)
+    // Appends CA store
+    v.Roots.AppendCertsFromPEM(cert)
 }
 
 func (v *WebValidator) AddMozillaCA() {
-	// Download and add Mozilla's Root CAs
-	resp, err := v.Client.Get("https://ccadb-public.secure.force.com/mozilla/IncludedRootsDistrustTLSSSLPEMCSV?TrustBitsInclude=Websites")
+    // Download and add Mozilla's Root CAs
+    resp, err := v.Client.Get("https://ccadb-public.secure.force.com/mozilla/IncludedRootsDistrustTLSSSLPEMCSV?TrustBitsInclude=Websites")
 
-	if err != nil {
-		log.Fatal("Couldn't download CSV file")
-	}
-	defer resp.Body.Close()
+    if err != nil {
+        log.Fatal("Couldn't download CSV file")
+    }
+    defer resp.Body.Close()
 
-	r := csv.NewReader(resp.Body)
-	// https://stackoverflow.com/questions/31326659/golang-csv-error-bare-in-non-quoted-field
-	r.LazyQuotes = true
+    r := csv.NewReader(resp.Body)
+    // https://stackoverflow.com/questions/31326659/golang-csv-error-bare-in-non-quoted-field
+    r.LazyQuotes = true
 
-	for {
-		// Read each record from CSV and appends CA store till end of the file
-		record, err := r.Read()
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			fmt.Println(err)
-		} else {
-			newCert := record[0][1 : len(record[0])-1]
-			v.AddCert([]byte(newCert))
+    for {
+        // Read each record from CSV and appends CA store till end of the file
+        record, err := r.Read()
+        if err == io.EOF {
+            break
+        }
+        if err != nil {
+            fmt.Println(err)
+        } else {
+            newCert := record[0][1 : len(record[0])-1]
+            v.AddCert([]byte(newCert))
 
-		}
+        }
 
-	}
+    }
 }
 
 func (v *WebValidator) CheckWeb(url string) ([]*x509.Certificate, error) {
-	// Validates URL's certificate state
-	var certChain []*x509.Certificate
-	var certErr error
-	req, err := http.NewRequest(http.MethodGet, url, nil)
-	if err == nil {
-		resp, err := v.Client.Do(req)
-		certErr = err
-		switch err {
-		case nil:
-			defer resp.Body.Close()
-			certChain = resp.TLS.PeerCertificates
-		default:
-			var val WebValidator
-			val.Init(true)
-			certChain, _ = val.CheckWeb(url)
-		}
-	}
-	return certChain, certErr
+    // Validates URL's certificate state
+    var certChain []*x509.Certificate
+    var certErr error
+    req, err := http.NewRequest(http.MethodGet, url, nil)
+    if err == nil {
+        resp, err := v.Client.Do(req)
+        certErr = err
+        switch err {
+        case nil:
+            defer resp.Body.Close()
+            certChain = resp.TLS.PeerCertificates
+        default:
+            var val WebValidator
+            val.Init(true)
+            certChain, _ = val.CheckWeb(url)
+        }
+    }
+    return certChain, certErr
 }
 
 func CheckOCSP(commonName string, cert, issuerCert *x509.Certificate) (*ocsp.Response, error) {
-	var response *ocsp.Response
-	opts := &ocsp.RequestOptions{Hash: crypto.SHA256}
-	buffer, err := ocsp.CreateRequest(cert, issuerCert, opts)
-	if err != nil {
-		return response, err
-	}
-	if len(cert.OCSPServer) > 0 {
-		return response, err
-	}
-	ocspServerURL := cert.OCSPServer[0]
-	httpRequest, err := http.NewRequest(http.MethodPost, ocspServerURL, bytes.NewBuffer(buffer))
-	if err != nil {
-		return response, err
-	}
-	ocspURL, err := url.Parse(ocspServerURL)
-	if err != nil {
-		return response, err
-	}
-	httpRequest.Header.Add("Content-Type", "application/ocsp-request")
-	httpRequest.Header.Add("Accept", "application/ocsp-response")
-	httpRequest.Header.Add("host", ocspURL.Host)
-	httpClient := &http.Client{}
-	httpResponse, err := httpClient.Do(httpRequest)
-	if err != nil {
-		return response, err
-	}
-	defer httpResponse.Body.Close()
-	output, err := ioutil.ReadAll(httpResponse.Body)
-	if err != nil {
-		return response, err
-	}
-	response, err = ocsp.ParseResponseForCert(output, cert, issuerCert)
+    var response *ocsp.Response
+    opts := &ocsp.RequestOptions{Hash: crypto.SHA256}
+    buffer, err := ocsp.CreateRequest(cert, issuerCert, opts)
+    if err != nil {
+        return response, err
+    }
+    if len(cert.OCSPServer) > 0 {
+        return response, err
+    }
+    ocspServerURL := cert.OCSPServer[0]
+    httpRequest, err := http.NewRequest(http.MethodPost, ocspServerURL, bytes.NewBuffer(buffer))
+    if err != nil {
+        return response, err
+    }
+    ocspURL, err := url.Parse(ocspServerURL)
+    if err != nil {
+        return response, err
+    }
+    httpRequest.Header.Add("Content-Type", "application/ocsp-request")
+    httpRequest.Header.Add("Accept", "application/ocsp-response")
+    httpRequest.Header.Add("host", ocspURL.Host)
+    httpClient := &http.Client{}
+    httpResponse, err := httpClient.Do(httpRequest)
+    if err != nil {
+        return response, err
+    }
+    defer httpResponse.Body.Close()
+    output, err := ioutil.ReadAll(httpResponse.Body)
+    if err != nil {
+        return response, err
+    }
+    response, err = ocsp.ParseResponseForCert(output, cert, issuerCert)
 
-	return response, err
+    return response, err
+}
+
+func RunCLI() {
+    var w4c WebValidator
+    var caSource string
+
+    app := &cli.App{
+        Name:                 "W4C",
+        Usage:                "CLI tool to validate Web",
+        EnableBashCompletion: true,
+        Action: func(c *cli.Context) error {
+            return nil
+        },
+        Flags: []cli.Flag{
+            &cli.StringFlag{
+                Name:        "tlscacert",
+                Aliases:     []string{"ca"},
+                Value:       "",
+                Usage:       "Path to CA certs",
+                Destination: &caSource,
+                Required:    true,
+            },
+        },
+    }
+
+    err := app.Run(os.Args)
+    if err != nil {
+        log.Fatal(err)
+    }
+    w4c.Init(false)
+
+    switch caSource {
+    case "":
+        w4c.AddCert([]byte(ccadbRootCA))
+        w4c.AddMozillaCA()
+    default:
+        caCerts, err := os.ReadFile(caSource)
+        if err != nil {
+            log.Fatal(err)
+        }
+        w4c.AddCert(caCerts)
+    }
+    link := "https://expired.badssl.com/"
+
+    _, err = w4c.CheckWeb(link)
+
+    fmt.Println(err)
+
+    // for _, cert := range certs {
+    //     fmt.Printf("DNS Names: %s\nValidity : %s - %s\nKey Algorithm: %s\nValid: %t\nURIs: %s\nOCSP: %s\nCLR: %s\n", cert.DNSNames, cert.NotBefore, cert.NotAfter, cert.PublicKeyAlgorithm.String(), cert.BasicConstraintsValid, cert.URIs, cert.OCSPServer, cert.CRLDistributionPoints)
+
+    //     // w4c.CheckCert(cert)
+    // }
+    // if res, err := CheckOCSP(link, certs[0], certs[1]); err == nil {
+    //     fmt.Println(res.Status)
+    // }
 }
 
 func main() {
-	var w4c WebValidator
-
-	w4c.Init(false)
-	w4c.AddCert([]byte(ccadbRootCA))
-	w4c.AddMozillaCA()
-
-	link := "https://delfi.lv"
-
-	certs, err := w4c.CheckWeb(link)
-
-	fmt.Println(err)
-
-	// for _, cert := range certs {
-	// 	fmt.Printf("DNS Names: %s\nValidity : %s - %s\nKey Algorithm: %s\nValid: %t\nURIs: %s\nOCSP: %s\nCLR: %s\n", cert.DNSNames, cert.NotBefore, cert.NotAfter, cert.PublicKeyAlgorithm.String(), cert.BasicConstraintsValid, cert.URIs, cert.OCSPServer, cert.CRLDistributionPoints)
-
-	// 	w4c.CheckCert(cert)
-	// }
-	if res, err := CheckOCSP(link, certs[0], certs[1]); err == nil {
-		fmt.Println(res.Status)
-	}
-
+    RunCLI()
 }

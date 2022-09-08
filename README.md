@@ -15,3 +15,5 @@ https://sematext.com/blog/ssl-certificate-error/
 https://www.cossacklabs.com/blog/tls-validation-implementing-ocsp-and-crl-in-go/
 
 https://github.com/the-gophers/go-action
+
+https://cs.opensource.google/go/go/+/master:src/crypto/x509/root_linux.go
