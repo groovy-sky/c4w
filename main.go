@@ -171,59 +171,86 @@ func CheckOCSP(commonName string, cert, issuerCert *x509.Certificate) (*ocsp.Res
 }
 
 func RunCLI() {
-    var w4c WebValidator
-    var caSource string
+    var c4w WebValidator
+    var caSource, webUrl string
 
     app := &cli.App{
-        Name:                 "W4C",
+        Name:                 "C4W",
         Usage:                "CLI tool to validate Web",
         EnableBashCompletion: true,
         Action: func(c *cli.Context) error {
             return nil
         },
-        Flags: []cli.Flag{
-            &cli.StringFlag{
-                Name:        "tlscacert",
-                Aliases:     []string{"ca"},
-                Value:       "",
-                Usage:       "Path to CA certs",
-                Destination: &caSource,
-                Required:    true,
+        Commands: []*cli.Command{
+            {
+                Name:    "check",
+                Aliases: []string{"a"},
+                Action: func(cCtx *cli.Context) error {
+                    return nil
+                },
+                Subcommands: []*cli.Command{
+                    {
+                        Name: "tls",
+                        Action: func(cCtx *cli.Context) error {
+                            return nil
+                        },
+                        Flags: []cli.Flag{
+                            &cli.StringFlag{
+                                Name:        "tlscacert",
+                                Aliases:     []string{"ca"},
+                                Value:       "",
+                                Usage:       "Path to CA certs",
+                                Destination: &caSource,
+                                Required:    false,
+                            },
+                            &cli.StringFlag{
+                                Name:        "url",
+                                Aliases:     []string{"u"},
+                                Usage:       "Website's URL",
+                                Destination: &webUrl,
+                                Required:    true,
+                            },
+                        },
+                    },
+                },
             },
         },
     }
+
+    fmt.Println(webUrl)
 
     err := app.Run(os.Args)
     if err != nil {
         log.Fatal(err)
     }
-    w4c.Init(false)
+    c4w.Init(false)
 
     switch caSource {
     case "":
-        w4c.AddCert([]byte(ccadbRootCA))
-        w4c.AddMozillaCA()
+        c4w.AddCert([]byte(ccadbRootCA))
+        c4w.AddMozillaCA()
     default:
         caCerts, err := os.ReadFile(caSource)
         if err != nil {
             log.Fatal(err)
         }
-        w4c.AddCert(caCerts)
+        c4w.AddCert(caCerts)
     }
-    link := "https://expired.badssl.com/"
 
-    _, err = w4c.CheckWeb(link)
+    certs, err := c4w.CheckWeb(webUrl)
 
     fmt.Println(err)
 
-    // for _, cert := range certs {
-    //     fmt.Printf("DNS Names: %s\nValidity : %s - %s\nKey Algorithm: %s\nValid: %t\nURIs: %s\nOCSP: %s\nCLR: %s\n", cert.DNSNames, cert.NotBefore, cert.NotAfter, cert.PublicKeyAlgorithm.String(), cert.BasicConstraintsValid, cert.URIs, cert.OCSPServer, cert.CRLDistributionPoints)
+    for _, cert := range certs {
+        fmt.Printf("DNS Names: %s\nValidity : %s - %s\nKey Algorithm: %s\nValid: %t\nURIs: %s\nOCSP: %s\nCLR: %s\n", cert.DNSNames, cert.NotBefore, cert.NotAfter, cert.PublicKeyAlgorithm.String(), cert.BasicConstraintsValid, cert.URIs, cert.OCSPServer, cert.CRLDistributionPoints)
 
-    //     // w4c.CheckCert(cert)
-    // }
-    // if res, err := CheckOCSP(link, certs[0], certs[1]); err == nil {
-    //     fmt.Println(res.Status)
-    // }
+        // c4w.CheckCert(cert)
+    }
+    /*
+       if res, err := CheckOCSP(webUrl, certs[0], certs[1]); err == nil {
+           fmt.Println(res.Status)
+       }
+    */
 }
 
 func main() {
